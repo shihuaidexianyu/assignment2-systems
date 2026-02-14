@@ -1,6 +1,6 @@
 [project]
 name = "cs336_basics"
-version = "1.0.3"
+version = "1.0.6"
 description = "CS336 Assignment 1"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,17 +14,38 @@ dependencies = [
     "regex>=2024.11.6", # more powerful regex than the builtin `re` module
     "submitit>=1.5.2", # job submission for SLURM
     "tiktoken>=0.9.0",
-    "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "torch~=2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'", # Intel Macs
+    "torch~=2.9.1",
+    "torchvision~=0.24.1",
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
+    "ty>=0.0.1a16",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
-[tool.setuptools.packages.find]
-include = ["cs336_basics"]
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
+[build-system]
+requires = ["uv_build>=0.8.3,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cs336_basics"
+module-root = ""
 
 [tool.uv]
 package = true
@@ -34,7 +55,6 @@ python-preference = "managed"
 log_cli = true
 log_cli_level = "WARNING"
 addopts = "-s"
-
 
 [tool.ruff]
 line-length = 120
