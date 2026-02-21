@@ -1,0 +1,67 @@
+[
+  {
+    "size": "small",
+    "d_model": 768,
+    "d_ff": 3072,
+    "num_layers": 12,
+    "num_heads": 12,
+    "rc": 0,
+    "fmean": 19.92,
+    "fstd": 2.175,
+    "bmean": 23.206,
+    "bstd": 3.082,
+    "status": "ok"
+  },
+  {
+    "size": "medium",
+    "d_model": 1024,
+    "d_ff": 4096,
+    "num_layers": 24,
+    "num_heads": 16,
+    "rc": 0,
+    "fmean": 52.056,
+    "fstd": 5.215,
+    "bmean": 63.543,
+    "bstd": 3.584,
+    "status": "ok"
+  },
+  {
+    "size": "large",
+    "d_model": 1280,
+    "d_ff": 5120,
+    "num_layers": 36,
+    "num_heads": 20,
+    "rc": 0,
+    "fmean": 77.149,
+    "fstd": 23.159,
+    "bmean": 131.873,
+    "bstd": 0.581,
+    "status": "ok"
+  },
+  {
+    "size": "xl",
+    "d_model": 1600,
+    "d_ff": 6400,
+    "num_layers": 48,
+    "num_heads": 25,
+    "rc": 0,
+    "fmean": 103.368,
+    "fstd": 4.547,
+    "bmean": 2239.672,
+    "bstd": 17.477,
+    "status": "ok"
+  },
+  {
+    "size": "2.7B",
+    "d_model": 2560,
+    "d_ff": 10240,
+    "num_layers": 32,
+    "num_heads": 32,
+    "rc": 0,
+    "fmean": 5305.99,
+    "fstd": 174.848,
+    "bmean": 48300.726,
+    "bstd": 2803.29,
+    "status": "ok"
+  }
+]
