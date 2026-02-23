@@ -20,6 +20,7 @@ class AttentionBenchmarkConfig:
     dtype: torch.dtype
     include_compile: bool
     causal: bool
+    compile_backend: str
 
 
 def _sync(device: str) -> None:
@@ -128,7 +129,7 @@ def _to_markdown_table(rows: list[dict[str, str]]) -> str:
 def run_attention_benchmarks(cfg: AttentionBenchmarkConfig) -> str:
     variants: list[tuple[str, callable]] = [("regular", regular_attention)]
     if cfg.include_compile:
-        compiled = torch.compile(regular_attention, dynamic=False)
+        compiled = torch.compile(regular_attention, backend=cfg.compile_backend, dynamic=False)
         variants.append(("regular_compiled", compiled))
 
     rows: list[dict[str, str]] = []
@@ -207,6 +208,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--causal", action="store_true")
     parser.add_argument("--include-compile", action="store_true")
+    parser.add_argument(
+        "--compile-backend",
+        type=str,
+        default="inductor",
+        choices=["inductor", "aot_eager", "eager"],
+        help="Backend passed to torch.compile when --include-compile is enabled.",
+    )
     parser.add_argument("--output-markdown", type=str, default=None)
     return parser.parse_args()
 
@@ -235,6 +243,7 @@ def main():
         dtype=_parse_dtype(args.dtype, args.device),
         include_compile=args.include_compile,
         causal=args.causal,
+        compile_backend=args.compile_backend,
     )
     markdown = run_attention_benchmarks(cfg)
     print(markdown)

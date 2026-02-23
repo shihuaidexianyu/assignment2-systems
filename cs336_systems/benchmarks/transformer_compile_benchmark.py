@@ -33,6 +33,7 @@ class CompileBenchmarkConfig:
     device: str
     dtype: torch.dtype
     mode: str  # forward_only | train_step
+    compile_backend: str
 
 
 def _sync(device: str) -> None:
@@ -61,7 +62,7 @@ def _build_model(cfg: CompileBenchmarkConfig) -> BasicsTransformerLM:
 def _run_single_variant(cfg: CompileBenchmarkConfig, use_compile: bool) -> tuple[float, float]:
     model = _build_model(cfg)
     if use_compile:
-        model = torch.compile(model, dynamic=False)
+        model = torch.compile(model, backend=cfg.compile_backend, dynamic=False)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, cfg.context_length), device=cfg.device)
@@ -188,6 +189,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--mode", type=str, default="forward_only", choices=["forward_only", "train_step"])
     parser.add_argument(
+        "--compile-backend",
+        type=str,
+        default="inductor",
+        choices=["inductor", "aot_eager", "eager"],
+        help="Backend passed to torch.compile for the compiled variant.",
+    )
+    parser.add_argument(
         "--compile-threads",
         type=int,
         default=1,
@@ -220,6 +228,7 @@ def main():
         device=args.device,
         dtype=_parse_dtype(args.dtype, args.device),
         mode=args.mode,
+        compile_backend=args.compile_backend,
     )
     table = run_compile_benchmark(cfg)
     print(table)
