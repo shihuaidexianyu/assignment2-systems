@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ class MemoryProfileConfig:
     lr: float
     device: str
     mixed_precision: bool
+    optimizer: str
     output_dir: Path
     record_history: bool
 
@@ -65,6 +67,14 @@ def _build_model(model_name: str, context_length: int, vocab_size: int, device: 
     return model
 
 
+def _build_optimizer(model: torch.nn.Module, optimizer_name: str, lr: float) -> torch.optim.Optimizer:
+    if optimizer_name == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=lr)
+    if optimizer_name == "sgd":
+        return torch.optim.SGD(model.parameters(), lr=lr)
+    raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+
+
 def _run_forward_only(model, x, use_mixed_precision: bool, device: str):
     with torch.no_grad():
         if use_mixed_precision:
@@ -95,45 +105,70 @@ def _profile_phase(
     phase: str,
     cfg: MemoryProfileConfig,
 ) -> dict[str, str]:
-    model = _build_model(model_name=model_name, context_length=context_length, vocab_size=cfg.vocab_size, device=cfg.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
-    x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, context_length), device=cfg.device, dtype=torch.long)
-    y = torch.randint(0, cfg.vocab_size, (cfg.batch_size, context_length), device=cfg.device, dtype=torch.long)
-
-    if cfg.record_history:
-        torch.cuda.memory._record_memory_history(
-            enabled="all",
-            context="all",
-            stacks="all",
-            max_entries=200000,
-            clear_history=True,
-        )
-
-    torch.cuda.reset_peak_memory_stats(cfg.device)
+    model = None
+    optimizer = None
+    x = None
+    y = None
     peaks_mb: list[float] = []
+    snapshot_path = "-"
+    status = "ok"
+    error = "-"
+    history_enabled = False
 
-    for i in range(cfg.warmup_steps + cfg.measure_steps):
-        if phase == "forward_only":
-            _run_forward_only(model, x, cfg.mixed_precision, cfg.device)
-        else:
-            _run_train_step(model, optimizer, x, y, cfg.vocab_size, cfg.mixed_precision, cfg.device)
-        if i >= cfg.warmup_steps:
-            peaks_mb.append(torch.cuda.max_memory_allocated(cfg.device) / (1024**2))
+    try:
+        model = _build_model(model_name=model_name, context_length=context_length, vocab_size=cfg.vocab_size, device=cfg.device)
+        optimizer = _build_optimizer(model=model, optimizer_name=cfg.optimizer, lr=cfg.lr)
+        x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, context_length), device=cfg.device, dtype=torch.long)
+        y = torch.randint(0, cfg.vocab_size, (cfg.batch_size, context_length), device=cfg.device, dtype=torch.long)
 
-    snapshot_path = ""
-    if cfg.record_history:
-        snapshot_path = str(cfg.output_dir / f"memory_snapshot_{phase}_ctx{context_length}.pickle")
-        torch.cuda.memory._dump_snapshot(snapshot_path)
-        torch.cuda.memory._record_memory_history(enabled=None)
+        if cfg.record_history:
+            torch.cuda.memory._record_memory_history(
+                enabled="all",
+                context="all",
+                stacks="all",
+                max_entries=200000,
+                clear_history=True,
+            )
+            history_enabled = True
 
+        torch.cuda.reset_peak_memory_stats(cfg.device)
+        for i in range(cfg.warmup_steps + cfg.measure_steps):
+            if phase == "forward_only":
+                _run_forward_only(model, x, cfg.mixed_precision, cfg.device)
+            else:
+                _run_train_step(model, optimizer, x, y, cfg.vocab_size, cfg.mixed_precision, cfg.device)
+            if i >= cfg.warmup_steps:
+                peaks_mb.append(torch.cuda.max_memory_allocated(cfg.device) / (1024**2))
+
+        if cfg.record_history:
+            snapshot_path = str(cfg.output_dir / f"memory_snapshot_{phase}_ctx{context_length}.pickle")
+            torch.cuda.memory._dump_snapshot(snapshot_path)
+    except RuntimeError as e:
+        if "out of memory" not in str(e).lower():
+            raise
+        status = "oom"
+        error = "out_of_memory"
+        snapshot_path = "-"
+    finally:
+        if history_enabled:
+            torch.cuda.memory._record_memory_history(enabled=None)
+        del model, optimizer, x, y
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    peak_mean = f"{statistics.mean(peaks_mb):.3f}" if peaks_mb else "-"
+    peak_max = f"{max(peaks_mb):.3f}" if peaks_mb else "-"
     return {
         "model": model_name,
         "phase": phase,
         "context_length": str(context_length),
         "mixed_precision": str(cfg.mixed_precision),
-        "peak_mean_mb": f"{statistics.mean(peaks_mb):.3f}",
-        "peak_max_mb": f"{max(peaks_mb):.3f}",
-        "snapshot_path": snapshot_path if snapshot_path else "-",
+        "optimizer": cfg.optimizer,
+        "peak_mean_mb": peak_mean,
+        "peak_max_mb": peak_max,
+        "status": status,
+        "error": error,
+        "snapshot_path": snapshot_path,
     }
 
 
@@ -160,6 +195,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--mixed-precision", action="store_true", help="Enable bf16 autocast for measured phase.")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "sgd"])
     parser.add_argument(
         "--record-history",
         action="store_true",
@@ -182,6 +218,7 @@ def main():
         lr=args.lr,
         device=args.device,
         mixed_precision=args.mixed_precision,
+        optimizer=args.optimizer,
         output_dir=Path(args.output_dir),
         record_history=args.record_history,
     )

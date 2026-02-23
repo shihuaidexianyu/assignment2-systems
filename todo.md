@@ -74,13 +74,13 @@
 - [x] 给 profiling/benchmark 脚本加一个「开启 PyTorch memory profiler」选项
   - [x] 记录 memory history → dump `memory_snapshot.pickle` → 用 `pytorch.org/memory_viz` 看
   - 脚本：`python -m cs336_systems.benchmarks.memory_profile_transformer --record-history ...`
-- [ ] 只做 2.7B 模型：context length 128 / 256 / 512
+- [x] 只做 2.7B 模型：context length 128 / 256 / 512
 - [ ] (a) 产出两张图（memory_viz 的 Active memory timeline）：
   - [ ] 仅 forward
   - [ ] 完整训练一步（fwd+bwd+optimizer step）
   - [ ] 外加 2~3 句解释：不同阶段的峰值能否区分？
-- [ ] (b) 表格：每个 context length 的 peak memory（forward-only vs full training step）
-- [ ] (c) 混精下（mixed precision）2.7B 的 peak memory（forward / full step）是否显著变化？（2~3 句）
+- [x] (b) 表格：每个 context length 的 peak memory（forward-only vs full training step）
+- [x] (c) 混精下（mixed precision）2.7B 的 peak memory（forward / full step）是否显著变化？（2~3 句）
 - [ ] (d) 在参考超参下：residual stream 的 activation tensor（FP32）大小（MB）推导
 - [ ] (e) memory_viz 把 Detail 降到只剩最大分配：最大分配有多大？从 stack trace 看来源是哪儿？
 
@@ -178,7 +178,7 @@
   - [x] tensor size：1MB / 10MB / 100MB / 1GB（float32）
   - [x] 进程数：2 / 4 / 6
   - [x] 资源：最多 6 GPUs；每个 benchmark run < 5 分钟
-- [ ] 输出：对比 plot/table + 2~3 句总结（这些因素如何交互）
+- [x] 输出：对比 plot/table + 2~3 句总结（这些因素如何交互）
   - 脚本：`python -m cs336_systems.benchmarks.distributed_allreduce_single_node ...`
 
 ### 4.2 Problem: `naive_ddp`（5 pts）
@@ -191,17 +191,17 @@
 ### 4.3 Problem: `naive_ddp_benchmarking`（3 pts）
 
 - [x] benchmark 朴素 DDP 训练你的语言模型（脚本支持）
-  - [ ] setting：单机 2 GPU；模型：XL
+  - [x] setting：单机 2 GPU；模型：XL（实测使用 `bf16+sgd`，避免 `adamw` OOM）
   - [x] 测量：每步训练总时间 + 通信占比（梯度 all-reduce 占用）
   - 脚本：`python -m cs336_systems.benchmarks.ddp_strategy_benchmark ... --strategies naive`
-- [ ] 输出：benchmark 设置描述 + 每步耗时 + 通信耗时
+- [x] 输出：benchmark 设置描述 + 每步耗时 + 通信耗时
 
 ### 4.4 Problem: `minimal_ddp_flat_benchmarking`（2 pts）
 
 - [x] 改造 minimal DDP：把所有 grad flatten 成一个大 tensor，做 **一次** batched all-reduce
-- [ ] 对比：原「每个参数一个 all-reduce」 vs 「单次 batched all-reduce」
-  - [ ] 指标：time/iter + time communicating gradients
-  - [ ] 1~2 句结论
+- [x] 对比：原「每个参数一个 all-reduce」 vs 「单次 batched all-reduce」
+  - [x] 指标：time/iter + time communicating gradients
+  - [x] 1~2 句结论
   - 脚本：`python -m cs336_systems.benchmarks.ddp_strategy_benchmark ... --strategies naive,flat`
 
 ### 4.5 Problem: `ddp_overlap_individual_parameters`（5 pts）
@@ -219,9 +219,9 @@
 
 ### 4.6 Problem: `ddp_overlap_individual_parameters_benchmarking`（1 pt）
 
-- [ ] (a) benchmark overlap 版本（单机 2 GPU，XL）
-  - [ ] 与之前两种设置对比：逐参 all-reduce / flatten batched all-reduce
-  - [ ] 输出：time/iter + 1~2 句对比
+- [x] (a) benchmark overlap 版本（单机 2 GPU，XL）
+  - [x] 与之前两种设置对比：逐参 all-reduce / flatten batched all-reduce
+  - [x] 输出：time/iter + 1~2 句对比
   - 已实现 benchmark 脚本：`python -m cs336_systems.benchmarks.ddp_strategy_benchmark ... --strategies naive,flat,overlap_individual`
 - [ ] (b) Nsight 对比 trace：
   - [ ] 初始 DDP（不 overlap）
@@ -243,10 +243,10 @@
 
 ### 4.8 Problem: `ddp_bucketed_benchmarking`（3 pts）
 
-- [ ] (a) benchmark bucket_size_mb ∈ {1, 10, 100, 1000}（单机 2 GPU，XL）
-  - [ ] 对比：不 bucket 的结果是否符合预期？不符合就解释（必要时用 PyTorch profiler）
-  - [ ] 你认为要怎么改实验设置才更符合预期？
-  - [ ] 输出：各 bucket size 的 time/iter + 3~4 句分析
+- [x] (a) benchmark bucket_size_mb ∈ {1, 10, 100, 1000}（单机 2 GPU，XL）
+  - [x] 对比：不 bucket 的结果是否符合预期？不符合就解释（必要时用 PyTorch profiler）
+  - [x] 你认为要怎么改实验设置才更符合预期？
+  - [x] 输出：各 bucket size 的 time/iter + 3~4 句分析
   - 已实现 sweep 脚本：`python -m cs336_systems.benchmarks.ddp_strategy_benchmark ... --strategies overlap_bucketed --bucket-sizes-mb 1,10,100,1000`
 - [ ] (b) 建模：
   - [ ] 给出 DDP 通信 overhead 的公式：用参数总大小 s（bytes）、all-reduce 带宽 w、每次通信开销 o（seconds）、bucket 数 n_b
@@ -283,12 +283,12 @@
 
 ### 5.2 Problem: `optimizer_state_sharding_accounting`（5 pts）
 
-- [ ] 标准配置：单机 2 GPU + XL
+- [x] 标准配置：单机 2 GPU + XL
 - [x] (a) 写脚本 profile peak memory（有/无 optimizer state sharding）
   - [x] report：初始化后、optimizer step 前、optimizer step 后
   - [x] 分解：参数/optimizer states/其它（2~3 句）
 - [x] (b) 比较训练速度：有/无 sharding 的 time/iter（2~3 句）
-- [ ] (c) 和 ZeRO stage 1（ZeRO-DP Pos）差异？（尤其 memory 与通信量；2~3 句）
+- [x] (c) 和 ZeRO stage 1（ZeRO-DP Pos）差异？（尤其 memory 与通信量；2~3 句）
   - 脚本：`python -m cs336_systems.benchmarks.sharded_optimizer_accounting ...`
 
 ---

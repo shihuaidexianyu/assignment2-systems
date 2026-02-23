@@ -13,7 +13,7 @@ class DDPIndividualParameters(nn.Module):
         self.module = module
         self._world_size = dist.get_world_size() if is_dist_initialized() else 1
         self._trainable_parameters: list[torch.nn.Parameter] = []
-        self._pending_allreduces: dict[int, tuple[dist.Work, torch.Tensor]] = {}
+        self._pending_allreduces: dict[int, tuple[dist.Work, torch.Tensor, torch.Tensor]] = {}
         seen: set[int] = set()
         for parameter in self.module.parameters():
             if id(parameter) in seen:
@@ -31,8 +31,9 @@ class DDPIndividualParameters(nn.Module):
         def _hook(grad: torch.Tensor):
             if self._world_size == 1:
                 return grad
-            handle = dist.all_reduce(grad, op=dist.ReduceOp.SUM, async_op=True)
-            self._pending_allreduces[id(parameter)] = (handle, grad)
+            reduced_grad = grad if grad.is_contiguous() else grad.contiguous()
+            handle = dist.all_reduce(reduced_grad, op=dist.ReduceOp.SUM, async_op=True)
+            self._pending_allreduces[id(parameter)] = (handle, grad, reduced_grad)
             return grad
 
         return _hook
@@ -45,13 +46,19 @@ class DDPIndividualParameters(nn.Module):
                 continue
             work_and_grad = self._pending_allreduces.get(id(parameter))
             if work_and_grad is None:
-                dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
-                parameter.grad.div_(self._world_size)
+                reduced_grad = parameter.grad if parameter.grad.is_contiguous() else parameter.grad.contiguous()
+                dist.all_reduce(reduced_grad, op=dist.ReduceOp.SUM)
+                reduced_grad.div_(self._world_size)
+                if reduced_grad.data_ptr() != parameter.grad.data_ptr():
+                    parameter.grad.copy_(reduced_grad)
                 continue
-            handle, reduced_grad = work_and_grad
+            handle, original_grad, reduced_grad = work_and_grad
             handle.wait()
             reduced_grad.div_(self._world_size)
-            parameter.grad.copy_(reduced_grad)
+            if reduced_grad.data_ptr() != original_grad.data_ptr():
+                original_grad.copy_(reduced_grad)
+            if parameter.grad.data_ptr() != original_grad.data_ptr():
+                parameter.grad.copy_(original_grad)
         self._pending_allreduces.clear()
 
 

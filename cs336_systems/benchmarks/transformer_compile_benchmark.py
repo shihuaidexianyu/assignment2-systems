@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
 import time
 from dataclasses import dataclass
@@ -108,19 +109,55 @@ def _to_markdown_table(rows: list[dict[str, str]]) -> str:
     return "\n".join([head, sep, *body])
 
 
+def _summarize_runtime_error(err: RuntimeError) -> tuple[str, str]:
+    msg = str(err)
+    msg_lower = msg.lower()
+    if "out of memory" in msg_lower:
+        return "oom", "out_of_memory"
+    if "inductorerror" in msg_lower or "compilation subprocess exited unexpectedly" in msg_lower:
+        return "error", "inductor_compile_crash"
+    return "error", "runtime_error"
+
+
 def run_compile_benchmark(cfg: CompileBenchmarkConfig) -> str:
     rows: list[dict[str, str]] = []
-    baseline_mean, baseline_std = _run_single_variant(cfg, use_compile=False)
-    compiled_mean, compiled_std = _run_single_variant(cfg, use_compile=True)
-    speedup = baseline_mean / max(compiled_mean, 1e-9)
+    baseline_mean = None
+    baseline_std = None
+    baseline_status = "ok"
+    baseline_error = "-"
+    compiled_mean = None
+    compiled_std = None
+    compiled_status = "ok"
+    compiled_error = "-"
+
+    try:
+        baseline_mean, baseline_std = _run_single_variant(cfg, use_compile=False)
+    except RuntimeError as e:
+        baseline_status, baseline_error = _summarize_runtime_error(e)
+        if cfg.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+    try:
+        compiled_mean, compiled_std = _run_single_variant(cfg, use_compile=True)
+    except RuntimeError as e:
+        compiled_status, compiled_error = _summarize_runtime_error(e)
+        if cfg.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+    speedup = "-"
+    if baseline_mean is not None and compiled_mean is not None:
+        speedup = f"{(baseline_mean / max(compiled_mean, 1e-9)):.3f}"
+
     rows.append(
         {
             "variant": "eager",
             "mode": cfg.mode,
             "model": cfg.model_name,
-            "mean_ms": f"{baseline_mean:.3f}",
-            "std_ms": f"{baseline_std:.3f}",
-            "speedup_vs_eager": "1.000",
+            "mean_ms": "-" if baseline_mean is None else f"{baseline_mean:.3f}",
+            "std_ms": "-" if baseline_std is None else f"{baseline_std:.3f}",
+            "speedup_vs_eager": "-" if baseline_mean is None else "1.000",
+            "status": baseline_status,
+            "error": baseline_error,
         }
     )
     rows.append(
@@ -128,9 +165,11 @@ def run_compile_benchmark(cfg: CompileBenchmarkConfig) -> str:
             "variant": "compiled",
             "mode": cfg.mode,
             "model": cfg.model_name,
-            "mean_ms": f"{compiled_mean:.3f}",
-            "std_ms": f"{compiled_std:.3f}",
-            "speedup_vs_eager": f"{speedup:.3f}",
+            "mean_ms": "-" if compiled_mean is None else f"{compiled_mean:.3f}",
+            "std_ms": "-" if compiled_std is None else f"{compiled_std:.3f}",
+            "speedup_vs_eager": speedup,
+            "status": compiled_status,
+            "error": compiled_error,
         }
     )
     return _to_markdown_table(rows)
@@ -148,6 +187,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--mode", type=str, default="forward_only", choices=["forward_only", "train_step"])
+    parser.add_argument(
+        "--compile-threads",
+        type=int,
+        default=1,
+        help="Set TORCHINDUCTOR_COMPILE_THREADS (1 is more stable on some environments).",
+    )
     parser.add_argument("--output-markdown", type=str, default=None)
     return parser.parse_args()
 
@@ -162,6 +207,8 @@ def _parse_dtype(value: str, device: str) -> torch.dtype:
 
 def main():
     args = parse_args()
+    if args.compile_threads >= 1:
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = str(args.compile_threads)
     cfg = CompileBenchmarkConfig(
         model_name=args.model,
         batch_size=args.batch_size,

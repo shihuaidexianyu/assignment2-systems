@@ -41,6 +41,8 @@ class DDPMetaConfig:
     measure_steps: int
     bucket_size_mb: float
     backend: str
+    dtype: str
+    optimizer: str
 
 
 class NaiveDDPAllReduce(nn.Module):
@@ -108,9 +110,20 @@ class FlatDDPAllReduce(nn.Module):
             offset += n
 
 
-def _build_model(model_size: str, vocab_size: int, context_length: int) -> BasicsTransformerLM:
+def _parse_dtype(dtype: str) -> torch.dtype:
+    mapping = {
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+    }
+    if dtype not in mapping:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+    return mapping[dtype]
+
+
+def _build_model(model_size: str, vocab_size: int, context_length: int, dtype: str) -> BasicsTransformerLM:
     size_cfg = MODEL_SIZES[model_size]
-    return BasicsTransformerLM(
+    model = BasicsTransformerLM(
         vocab_size=vocab_size,
         context_length=context_length,
         d_model=size_cfg["d_model"],
@@ -119,6 +132,8 @@ def _build_model(model_size: str, vocab_size: int, context_length: int) -> Basic
         num_heads=size_cfg["num_heads"],
         rope_theta=10000.0,
     )
+    model = model.to(dtype=_parse_dtype(dtype))
+    return model
 
 
 def _wrap_model(strategy: str, model: nn.Module, bucket_size_mb: float) -> nn.Module:
@@ -134,9 +149,19 @@ def _wrap_model(strategy: str, model: nn.Module, bucket_size_mb: float) -> nn.Mo
 
 
 def _run_train_loop(device: str, config: DDPMetaConfig) -> tuple[list[float], list[float]]:
-    model = _build_model(config.model_size, vocab_size=config.vocab_size, context_length=config.context_length).to(device)
+    model = _build_model(
+        config.model_size,
+        vocab_size=config.vocab_size,
+        context_length=config.context_length,
+        dtype=config.dtype,
+    ).to(device)
     ddp_model = _wrap_model(config.strategy, model=model, bucket_size_mb=config.bucket_size_mb)
-    optimizer = optim.AdamW(ddp_model.parameters(), lr=config.lr)
+    if config.optimizer == "adamw":
+        optimizer = optim.AdamW(ddp_model.parameters(), lr=config.lr)
+    elif config.optimizer == "sgd":
+        optimizer = optim.SGD(ddp_model.parameters(), lr=config.lr)
+    else:
+        raise ValueError(f"Unsupported optimizer: {config.optimizer}")
 
     step_times_ms: list[float] = []
     comm_wait_ms: list[float] = []
@@ -153,7 +178,8 @@ def _run_train_loop(device: str, config: DDPMetaConfig) -> tuple[list[float], li
         synchronize(device)
         t0 = time.perf_counter()
         logits = ddp_model(x)
-        loss = torch.nn.functional.cross_entropy(logits.reshape(-1, config.vocab_size), y.reshape(-1))
+        # Cross entropy in fp32 is more stable and works for low-precision model dtypes.
+        loss = torch.nn.functional.cross_entropy(logits.float().reshape(-1, config.vocab_size), y.reshape(-1))
         loss.backward()
         synchronize(device)
 
@@ -227,6 +253,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--measure-steps", type=int, default=5)
+    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "bfloat16", "float16"])
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "sgd"])
     parser.add_argument(
         "--strategies",
         type=str,
@@ -271,6 +299,8 @@ def main():
                     measure_steps=args.measure_steps,
                     bucket_size_mb=bucket_size_mb,
                     backend=args.backend,
+                    dtype=args.dtype,
+                    optimizer=args.optimizer,
                 )
                 print(f"Running strategy={strategy}, bucket_size_mb={bucket_size_mb}")
                 rows.append(_run_strategy(world_size=args.world_size, config=cfg))
@@ -286,6 +316,8 @@ def main():
                 measure_steps=args.measure_steps,
                 bucket_size_mb=bucket_sizes[0] if bucket_sizes else 10.0,
                 backend=args.backend,
+                dtype=args.dtype,
+                optimizer=args.optimizer,
             )
             print(f"Running strategy={strategy}")
             rows.append(_run_strategy(world_size=args.world_size, config=cfg))

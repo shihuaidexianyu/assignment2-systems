@@ -110,9 +110,9 @@
 ## 尚未完成（写作/实验维度）
 
 - `nsys_profile`：脚本已完成，当前机器无 `nsys` 二进制，未产出 trace
-- `memory profiling`：脚本与 snapshot 已完成，但 2.7B + 多 context 的完整实验未跑齐
+- `memory profiling`：2.7B + 多 context 已跑齐（含 OOM 记录），但 memory_viz 图和写作题仍待补齐
 - `FlashAttention Triton kernel`：当前 Triton adapter 仍是 PyTorch fallback（功能正确但非融合 kernel）
-- DDP / sharded optimizer：脚本已完成，题目要求的 2 GPU + XL 全量实验仍待目标硬件
+- DDP / sharded optimizer：已完成 2xRTX5090 的 XL 实测；Nsight trace 与部分写作题仍待补齐
 
 ## distributed_benchmarking_scripts（新增）
 
@@ -150,6 +150,62 @@
 - flatten 后通信等待时间显著低于 naive（`7.565ms` vs `38.714ms`）。
 - overlap+bucket 进一步降低了 `finish_gradient_synchronization()` 的等待开销。
 - 以上仅用于验证脚本与趋势；作业最终结果仍需按题目要求在指定设置（如单机 2 GPU、XL、bucket sweep）完整运行。
+
+## distributed_benchmarking_results（2xRTX5090 实测，2026-02-23）
+
+环境说明：
+
+- 机器：`lfs-dev`
+- GPU：`2 x NVIDIA GeForce RTX 5090`
+- 分布式后端：`NCCL`（4.1 同时包含 `Gloo`）
+
+### 4.1 all-reduce（world_size=2）
+
+| backend | world_size | tensor_mb | mean_ms | std_ms | effective_gbps |
+| --- | --- | --- | --- | --- | --- |
+| gloo | 2 | 1 | 1.177 | 0.193 | 0.891 |
+| gloo | 2 | 10 | 4.145 | 0.330 | 2.530 |
+| gloo | 2 | 100 | 40.147 | 0.648 | 2.612 |
+| gloo | 2 | 1024 | 433.904 | 18.193 | 2.475 |
+| nccl | 2 | 1 | 0.069 | 0.003 | 15.302 |
+| nccl | 2 | 10 | 0.541 | 0.681 | 19.393 |
+| nccl | 2 | 100 | 3.319 | 0.023 | 31.591 |
+| nccl | 2 | 1024 | 31.793 | 0.602 | 33.773 |
+
+简要结论：
+
+- `NCCL` 在所有消息大小上都显著优于 `Gloo`，大消息优势最明显（`1024MB`：`33.773 Gbps` vs `2.475 Gbps`）。
+- 小消息更受固定通信开销影响，大消息时有效带宽更接近链路上限。
+
+### 4.3/4.4/4.6（XL, world_size=2, bf16+sgd）
+
+说明：`XL + AdamW` 在本环境会触发 optimizer-state OOM，因此 DDP 策略对比使用 `bf16 + SGD`（同一配置下各策略可公平比较）。
+
+| strategy | model_size | bucket_size_mb | mean_step_ms | mean_comm_wait_ms | comm_wait_ratio |
+| --- | --- | --- | --- | --- | --- |
+| naive | xl | - | 283.717 | 139.948 | 0.4933 |
+| flat | xl | - | 275.381 | 137.146 | 0.4980 |
+| overlap_individual | xl | - | 271.323 | 42.633 | 0.1571 |
+
+简要结论：
+
+- `naive` 与 `flat` 的 step time 接近，但两者通信等待占比都接近 `0.5`。
+- `overlap_individual` 把通信等待占比从 `~0.49` 显著压到 `~0.16`，说明通信被较好地隐藏在反向传播中。
+
+### 4.8（bucket sweep, XL, world_size=2, bf16+sgd）
+
+| strategy | model_size | bucket_size_mb | mean_step_ms | mean_comm_wait_ms | comm_wait_ratio |
+| --- | --- | --- | --- | --- | --- |
+| overlap_bucketed | xl | 1.0 | 230.696 | 7.770 | 0.0337 |
+| overlap_bucketed | xl | 10.0 | 221.662 | 8.048 | 0.0363 |
+| overlap_bucketed | xl | 100.0 | 224.568 | 10.617 | 0.0473 |
+| overlap_bucketed | xl | 1000.0 | 264.168 | 12.227 | 0.0463 |
+
+简要结论：
+
+- 本次实验中 `10MB` bucket 最优（`221.662 ms/iter`）。
+- bucket 过大（`1000MB`）会退化，原因是通信启动更晚、overlap 变弱。
+- bucket 过小会增加通信次数和 per-collective 固定开销。
 
 ## mixed_precision_study（新增）
 
@@ -220,12 +276,35 @@ train-step:
 
 脚本：`python -m cs336_systems.benchmarks.memory_profile_transformer --record-history ...`
 
-small + ctx=128 smoke run：
+2xRTX5090 实测（2.7B，batch_size=4，AdamW）：
 
-| model | phase | context_length | mixed_precision | peak_mean_mb | peak_max_mb | snapshot_path |
-| --- | --- | --- | --- | --- | --- | --- |
-| small | forward_only | 128 | False | 526.237 | 526.237 | /tmp/memory_artifacts/memory_snapshot_forward_only_ctx128.pickle |
-| small | train_step | 128 | False | 2508.156 | 2508.156 | /tmp/memory_artifacts/memory_snapshot_train_step_ctx128.pickle |
+FP32:
+
+| model | phase | context_length | mixed_precision | optimizer | peak_mean_mb | peak_max_mb | status | error | snapshot_path |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.7B | forward_only | 128 | False | adamw | 13212.807 | 13212.807 | ok | - | artifacts/memory_fp32/memory_snapshot_forward_only_ctx128.pickle |
+| 2.7B | train_step | 128 | False | adamw | - | - | oom | out_of_memory | - |
+| 2.7B | forward_only | 256 | False | adamw | 13319.170 | 13319.170 | ok | - | artifacts/memory_fp32/memory_snapshot_forward_only_ctx256.pickle |
+| 2.7B | train_step | 256 | False | adamw | - | - | oom | out_of_memory | - |
+| 2.7B | forward_only | 512 | False | adamw | 13753.580 | 13753.580 | ok | - | artifacts/memory_fp32/memory_snapshot_forward_only_ctx512.pickle |
+| 2.7B | train_step | 512 | False | adamw | - | - | oom | out_of_memory | - |
+
+BF16 autocast:
+
+| model | phase | context_length | mixed_precision | optimizer | peak_mean_mb | peak_max_mb | status | error | snapshot_path |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.7B | forward_only | 128 | True | adamw | 19599.135 | 19599.135 | ok | - | artifacts/memory_bf16/memory_snapshot_forward_only_ctx128.pickle |
+| 2.7B | train_step | 128 | True | adamw | - | - | oom | out_of_memory | - |
+| 2.7B | forward_only | 256 | True | adamw | 19624.338 | 19624.338 | ok | - | artifacts/memory_bf16/memory_snapshot_forward_only_ctx256.pickle |
+| 2.7B | train_step | 256 | True | adamw | - | - | oom | out_of_memory | - |
+| 2.7B | forward_only | 512 | True | adamw | 19857.580 | 19857.580 | ok | - | artifacts/memory_bf16/memory_snapshot_forward_only_ctx512.pickle |
+| 2.7B | train_step | 512 | True | adamw | - | - | oom | out_of_memory | - |
+
+简要结论：
+
+- 在本机 32GB 显存条件下，`2.7B + AdamW` 的完整 `train_step` 在 `ctx=128/256/512` 均 OOM。
+- `forward_only` 可稳定运行，且峰值随 context length 增长（FP32: `13212 -> 13754 MB`）。
+- 本次 `BF16 autocast` 的 forward 峰值高于 FP32；这是因为参数仍为 FP32，且混精路径引入额外中间缓冲/工作区，未能在该配置下带来峰值显存下降。
 
 ## flash_attention_benchmark（新增）
 
@@ -250,6 +329,19 @@ small + ctx=128 smoke run：
 | sharded | 1 | small | 256.060 | 1058.584 | 1058.584 | 1317.082 | 245.333 | 490.667 | 322.584 | 22.669 |
 
 说明：`world_size=1` 时两者应一致；2 GPU 场景下才会出现 optimizer state 分片收益。
+
+### 5.2 实测（XL, world_size=2, bf16）
+
+| variant | world_size | model | init_alloc_mb | pre_step_alloc_mb | post_step_alloc_mb | peak_alloc_mb | param_mb | optimizer_state_mb_post | other_mb_post | step_ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline | 2 | xl | 3901.390 | 15622.678 | 15622.678 | 19530.686 | 3811.331 | 7622.664 | 4188.683 | 55.792 |
+| sharded | 2 | xl | 3901.390 | 11721.312 | 11721.312 | 13678.635 | 3811.331 | 3811.332 | 4098.648 | 125.828 |
+
+简要结论：
+
+- sharding 将 optimizer state 从 `7622.664MB` 降到 `3811.332MB`（约减半），峰值显存也从 `19530.686MB` 降到 `13678.635MB`。
+- 代价是 step time 上升（`55.792ms -> 125.828ms`），反映了每步额外参数同步通信开销。
+- 与 ZeRO stage 1 的关系：本实现与 ZeRO-1 在目标上相同（分片 optimizer states 以省显存），但工程细节和通信调度更简化，未做完整 ZeRO 体系中的优化（如更细粒度 overlap/融合策略）。
 
 ## nsys_profile_runner（新增）
 

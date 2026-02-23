@@ -24,9 +24,11 @@ zip -r "$output_file" . \
     -x '*.out' \
     -x '*.err' \
     -x '.git*' \
-    -x '.venv/*' \
+    -x '.venv*' \
     -x '*.bin' \
     -x '*.pt' \
-    -x '*.pth'
+    -x '*.pth' \
+    -x '*.pdf' \
+    -x '*.md' \
 
 echo "All files have been compressed into $output_file"
